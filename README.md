@@ -1,2 +1,2 @@
 # Bruteforce
-A password bruteforcer
+A simple password bruteforcer
