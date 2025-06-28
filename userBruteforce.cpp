@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <vector>
+#include <vector> 
 #include <Windows.h> 
 
 const size_t MAIN_BATCH_SIZE = 1000;  // Start with 1000 passwords per main batch
